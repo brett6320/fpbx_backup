@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily FusionPBX incremental backup (Mon-Sat)
+
+[Timer]
+# 02:00 Monday through Saturday (Sunday is the full backup).
+OnCalendar=Mon..Sat *-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,16 @@
+# Local backup artifacts / runtime state — never commit
+*.tar
+*.tar.gz
+*.age
+*.gpg
+*.snar
+backups/
+state/
+
+# Secrets
+*.key
+fpbx-age.key
+
+# Editor / OS cruft
+*.swp
+.DS_Store

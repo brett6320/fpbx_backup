@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly FusionPBX full backup
+
+[Timer]
+# Sunday 02:00 local time.
+OnCalendar=Sun *-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

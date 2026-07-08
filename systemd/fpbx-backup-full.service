@@ -1,0 +1,16 @@
+[Unit]
+Description=FusionPBX full backup (level-0, starts a new chain)
+Documentation=file:/opt/fpbx_backup/README.md
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+# Adjust the path if you installed elsewhere than /opt/fpbx_backup.
+# Leading '-' = advisory: log problems but never block the backup itself.
+ExecStartPre=-/opt/fpbx_backup/fpbx-selftest.sh
+ExecStart=/opt/fpbx_backup/fpbx-backup.sh --mode full
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# Backups touch secrets; keep output in the journal only.

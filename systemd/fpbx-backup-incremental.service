@@ -1,0 +1,12 @@
+[Unit]
+Description=FusionPBX incremental backup (changed files since last full)
+Documentation=file:/opt/fpbx_backup/README.md
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/fpbx_backup/fpbx-backup.sh --mode incremental
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
