@@ -26,6 +26,9 @@
 # user on Debian; change if your install differs.
 : "${OWNER_USER:=www-data}"
 : "${OWNER_GROUP:=www-data}"
+# If FreeSWITCH runs as its own user (not www-data), set this so restored
+# voicemail/recordings get group access for both FreeSWITCH and the web user.
+: "${FS_RUN_USER:=}"
 # Services stopped during restore and restarted after (space-separated).
 : "${SERVICES:=freeswitch nginx php8.2-fpm}"
 
@@ -71,11 +74,56 @@ load_config() {
 # ----------------------------------------------------------------------------
 # FusionPBX DB credential detection
 # ----------------------------------------------------------------------------
-# Reads FPBX_CONFIG (INI-ish, keys like  database.0.host = 127.0.0.1 ).
-# Exports: DB_TYPE DB_HOST DB_PORT DB_NAME DB_USER DB_PASS DB_SSLMODE DB_PATH
-# DB_TYPE is normalized to  pgsql  or  sqlite .
+# Supports BOTH config formats:
+#   * 5.x   INI  /etc/fusionpbx/config.conf   (database.0.host = 127.0.0.1)
+#   * <=4.x PHP  /etc/fusionpbx/config.php    ($db_host = '127.0.0.1';)
+# Auto-detects which is present so a 4.5.1 box can be backed up and a 5.x box
+# restored. Exports: DB_TYPE DB_HOST DB_PORT DB_NAME DB_USER DB_PASS
+# DB_SSLMODE DB_PATH. DB_TYPE normalized to  pgsql  or  sqlite .
+
+# Legacy config.php candidates, most-specific first (override: FPBX_CONFIG_LEGACY).
+_legacy_config() {
+	local c
+	for c in "${FPBX_CONFIG_LEGACY:-}" \
+	         /etc/fusionpbx/config.php \
+	         /var/www/fusionpbx/resources/config.php; do
+		[ -n "$c" ] && [ -f "$c" ] && { echo "$c"; return 0; }
+	done
+	return 1
+}
+
+# Parse legacy PHP config: pull  $db_<key> = 'value';  (single or double quotes).
+detect_db_php() {
+	local f="$1"
+	_php() {
+		sed -n "s/^[[:space:]]*\$db_$1[[:space:]]*=[[:space:]]*['\"]\{0,1\}\([^'\";]*\).*/\1/p" \
+			"$f" | head -n1 | tr -d '\r'
+	}
+	DB_TYPE="$(_php type)"
+	DB_HOST="$(_php host)"
+	DB_PORT="$(_php port)"
+	DB_NAME="$(_php name)"
+	# 4.x uses $db_username; some builds use $db_user — try both.
+	DB_USER="$(_php username)"; [ -n "$DB_USER" ] || DB_USER="$(_php user)"
+	DB_PASS="$(_php password)"
+	DB_PATH="$(_php path)"
+	DB_SSLMODE=""
+	log "parsed legacy PHP config: $f"
+}
+
 detect_db() {
-	[ -f "$FPBX_CONFIG" ] || die "FusionPBX config not found: $FPBX_CONFIG"
+	# Prefer the 5.x INI config when it actually carries a database.0 block;
+	# otherwise fall back to a legacy PHP config (4.x and older).
+	local legacy=""
+	if [ -f "$FPBX_CONFIG" ] && grep -q '^[[:space:]]*database\.0\.type' "$FPBX_CONFIG" 2>/dev/null; then
+		: # use INI path below
+	elif legacy="$(_legacy_config)"; then
+		detect_db_php "$legacy"
+		_finalize_db
+		return
+	else
+		die "no FusionPBX DB config found (looked for $FPBX_CONFIG and config.php)"
+	fi
 
 	# Pull the first database.N.* block (FusionPBX numbers them; 0 is primary).
 	local n=0
@@ -92,12 +140,15 @@ detect_db() {
 	DB_PASS="$(_ini password)"
 	DB_SSLMODE="$(_ini sslmode)"
 	DB_PATH="$(_ini path)"
+	_finalize_db
+}
 
-	# Normalize type.
+# Normalize DB_TYPE, apply defaults, export. Shared by INI + PHP paths.
+_finalize_db() {
 	case "$DB_TYPE" in
 		pgsql|postgres|postgresql) DB_TYPE="pgsql" ;;
 		sqlite|sqlite3)            DB_TYPE="sqlite" ;;
-		"") die "could not read database.0.type from $FPBX_CONFIG" ;;
+		"") die "could not read database type from FusionPBX config" ;;
 		*)  die "unsupported database type: $DB_TYPE" ;;
 	esac
 
@@ -109,8 +160,16 @@ detect_db() {
 		: "${DB_SSLMODE:=prefer}"
 		[ -n "$DB_PASS" ] || warn "no DB password parsed; relying on ~/.pgpass or peer auth"
 	else
-		# SQLite: path may be relative to FusionPBX; default location.
-		: "${DB_PATH:=/var/lib/fusionpbx/database/fusionpbx.db}"
+		# SQLite: FusionPBX stores $db_path as a DIRECTORY and $db_name as the
+		# file. Join them unless DB_PATH already points at a .db/.sqlite file.
+		if [ -n "$DB_PATH" ]; then
+			case "$DB_PATH" in
+				*.db|*.sqlite|*.sqlite3) : ;;                 # already a file
+				*) [ -n "$DB_NAME" ] && DB_PATH="${DB_PATH%/}/$DB_NAME" ;;
+			esac
+		else
+			: "${DB_PATH:=/var/lib/fusionpbx/database/fusionpbx.db}"
+		fi
 	fi
 
 	export DB_TYPE DB_HOST DB_PORT DB_NAME DB_USER DB_PASS DB_SSLMODE DB_PATH
@@ -135,7 +194,7 @@ manifest_write() {
 		echo "db_name=${DB_NAME:-}"
 		echo "recordings=${BACKUP_RECORDINGS}"
 		echo "encryption=${ENCRYPTION}"
-		echo "tool_version=1.0.0"
+		echo "tool_version=1.1.0"
 		echo "fusionpbx_version=$(sed -n 's/.*full[^0-9]*\([0-9.]*\).*/\1/p' \
 			/var/www/fusionpbx/resources/version.php 2>/dev/null | head -n1)"
 		echo "freeswitch_version=$(fs_cli -x 'version' 2>/dev/null | head -n1)"
