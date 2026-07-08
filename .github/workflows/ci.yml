@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: bash -n syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse every shell script
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r -d '' f; do
+            if bash -n "$f"; then echo "ok   $f"; else echo "FAIL $f"; fail=1; fi
+          done < <(find . -name '*.sh' -type f -print0)
+          exit $fail
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        uses: ludeeus/action-shellcheck@master
+        env:
+          # Sourced libs + dynamic config: don't flag "can't follow source".
+          SHELLCHECK_OPTS: -e SC1090 -e SC1091 -S warning
+        with:
+          scandir: '.'
+          additional_files: 'fpbx-backup.conf'
+
+  systemd-units:
+    name: validate systemd units
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: systemd-analyze verify
+        run: |
+          set -e
+          # Analyze each unit; ExecStart paths won't exist on the runner, so
+          # ignore "command not found" style file-exists warnings, but catch
+          # real syntax errors in the unit files.
+          for u in systemd/*.service systemd/*.timer; do
+            echo "== $u =="
+            systemd-analyze verify --recursive-errors=no "$u" 2>&1 \
+              | grep -v -e 'Failed to prepare' -e 'not executable' -e 'does not exist' || true
+          done

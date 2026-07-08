@@ -32,7 +32,7 @@ offsite_push() {
 # offsite_pull NAME DESTDIR — fetch archive NAME from remote into DESTDIR.
 # Echoes the local path on success.
 offsite_pull() {
-	local name="$1" dest="$2" f="$2/$1"
+	local name="$1" f="$2/$1"
 	case "$OFFSITE" in
 		s3)
 			need aws; aws ${AWS_PROFILE:+--profile "$AWS_PROFILE"} \
