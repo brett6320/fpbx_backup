@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
 		--db-only)    DO_FILES=0; shift ;;
 		--files-only) DO_DB=0; shift ;;
 		--no-services) MANAGE_SVC=0; shift ;;
-		--force)   FORCE=1; shift ;;
+		--force)   FORCE=1; export FORCE; shift ;;   # read by confirm() in common.sh
 		--list)    LIST=1; shift ;;
 		--verify)  VERIFY=1; shift ;;
 		-h|--help) sed -n '2,13p' "$0"; exit 0 ;;

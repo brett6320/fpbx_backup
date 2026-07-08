@@ -3,7 +3,7 @@
 # Supports full and incremental (tar snapshot) file backups, encryption, offsite.
 #
 # Usage:
-#   ./fpbx-backup.sh [--mode full|incremental] [--config PATH] [--force]
+#   ./fpbx-backup.sh [--mode full|incremental] [--config PATH]
 #
 # Run as root (needs read on /etc/freeswitch, /var/lib/freeswitch, DB creds).
 set -euo pipefail
@@ -21,7 +21,6 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		--mode)   CLI_MODE="$2"; shift 2 ;;
 		--config) CONFIG="$2";   shift 2 ;;
-		--force)  FORCE=1;       shift ;;
 		-h|--help)
 			sed -n '2,9p' "$0"; exit 0 ;;
 		*) die "unknown arg: $1" ;;
