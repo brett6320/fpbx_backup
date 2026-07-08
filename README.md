@@ -152,9 +152,47 @@ from its full.
 
 ## Migration notes (`--target migrate`)
 
-The restore prints a checklist: verify DB creds in `config.conf` match the new
-host's Postgres, re-point DNS/SIP domains if the IP changed, re-issue/copy TLS,
-and run FusionPBX *Advanced > Upgrade* (App Defaults + Permissions).
+For a **same-version** move to a new host, the restore prints a checklist:
+verify DB creds in `config.conf` match the new host's Postgres, re-point DNS/SIP
+domains if the IP changed, re-issue/copy TLS, and run FusionPBX
+*Advanced > Upgrade* (App Defaults + Permissions).
+
+## Cross-version migration (e.g. 4.5.1 → 5.x) — use `--data-only`
+
+Different FusionPBX **major** versions have different PHP requirements (4.5.1 =
+PHP 7.0/7.1; 5.x = PHP 8.2) and an evolved database schema. You **must not**
+copy the old application source or `/etc/freeswitch` onto the new host — the old
+PHP fatals on PHP 8, and `/etc/freeswitch` is regenerated from the database
+anyway. Only the **database content** and **voicemail/recordings** are portable.
+
+Backup side handles this automatically: `detect_db` reads the legacy 4.x
+`config.php` (`$db_*` variables) when the 5.x `config.conf` is absent, so a
+4.5.1 box backs up normally.
+
+Restore with `--data-only` (implies `--target migrate`):
+
+```
+# On a FRESH 5.x install:
+sudo AGE_IDENTITY=/root/fpbx-age.key ./fpbx-restore.sh --chain <id> --data-only
+```
+
+This restores **DB + `/var/lib/freeswitch` only** — never the app source or
+`/etc/freeswitch`. It then prints the required follow-up, which you run once:
+
+```
+php /var/www/fusionpbx/core/upgrade/upgrade.php -s      # schema + data types
+php /var/www/fusionpbx/core/upgrade/upgrade.php -d      # app defaults
+php /var/www/fusionpbx/core/upgrade/upgrade.php -d      # run defaults TWICE
+php /var/www/fusionpbx/core/upgrade/upgrade.php -p -m   # permissions + menu
+fs_cli -x 'reloadxml'; rm -rf /var/cache/fusionpbx/*
+```
+
+FusionPBX's `schema.php` auto-diffs the restored (old) DB against the 5.x app
+definitions and applies additive, idempotent `CREATE/ALTER` statements — it
+brings the schema forward without dropping data. Set `FS_RUN_USER=freeswitch`
+in the config if FreeSWITCH runs as its own user, so restored voicemail is
+group-accessible to both it and `www-data`. Then test: place a call, leave and
+retrieve a voicemail, and play back an old recording.
 
 ## Scheduling with systemd
 
