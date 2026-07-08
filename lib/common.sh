@@ -160,8 +160,16 @@ _finalize_db() {
 		: "${DB_SSLMODE:=prefer}"
 		[ -n "$DB_PASS" ] || warn "no DB password parsed; relying on ~/.pgpass or peer auth"
 	else
-		# SQLite: path may be relative to FusionPBX; default location.
-		: "${DB_PATH:=/var/lib/fusionpbx/database/fusionpbx.db}"
+		# SQLite: FusionPBX stores $db_path as a DIRECTORY and $db_name as the
+		# file. Join them unless DB_PATH already points at a .db/.sqlite file.
+		if [ -n "$DB_PATH" ]; then
+			case "$DB_PATH" in
+				*.db|*.sqlite|*.sqlite3) : ;;                 # already a file
+				*) [ -n "$DB_NAME" ] && DB_PATH="${DB_PATH%/}/$DB_NAME" ;;
+			esac
+		else
+			: "${DB_PATH:=/var/lib/fusionpbx/database/fusionpbx.db}"
+		fi
 	fi
 
 	export DB_TYPE DB_HOST DB_PORT DB_NAME DB_USER DB_PASS DB_SSLMODE DB_PATH

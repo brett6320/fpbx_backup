@@ -165,9 +165,12 @@ copy the old application source or `/etc/freeswitch` onto the new host — the o
 PHP fatals on PHP 8, and `/etc/freeswitch` is regenerated from the database
 anyway. Only the **database content** and **voicemail/recordings** are portable.
 
-Backup side handles this automatically: `detect_db` reads the legacy 4.x
-`config.php` (`$db_*` variables) when the 5.x `config.conf` is absent, so a
-4.5.1 box backs up normally.
+Backup side handles this automatically for **any 4.x release**: `detect_db`
+reads whichever config the host uses — the legacy `config.php` (`$db_*`
+variables, FusionPBX 4.0–4.3) or the INI `config.conf` (`database.0.*`,
+introduced around 4.4 and used by 5.x). Both PostgreSQL and SQLite (directory
+`$db_path` + `$db_name` joined into the file path) are handled. So a 4.0, 4.2,
+4.4, or 4.5.x box all back up normally.
 
 Restore with `--data-only` (implies `--target migrate`):
 
