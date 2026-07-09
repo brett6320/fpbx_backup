@@ -42,7 +42,19 @@ need gzip
 RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 HOST="$(hostname -s 2>/dev/null || hostname)"
 STATE_DIR="$BACKUP_DIR/state"
+
+# Archives hold the database, TLS private keys and voicemail. Never group- or
+# world-readable, encrypted or not: age/gpg protects the bytes off-box, file
+# mode protects them from every other local account.
+umask 077
 mkdir -p "$BACKUP_DIR" "$STATE_DIR"
+chmod 700 "$BACKUP_DIR" "$STATE_DIR" 2>/dev/null || warn "could not tighten perms on $BACKUP_DIR"
+
+if [ "$ENCRYPTION" = "none" ]; then
+	warn "ENCRYPTION=none — archives are stored in the clear (root-only, 0600)."
+	warn "  They contain the FusionPBX database, /etc/letsencrypt and FreeSWITCH"
+	warn "  TLS keys. Set ENCRYPTION=age in ${CONFIG} before copying them off-box."
+fi
 
 detect_db
 
@@ -153,7 +165,9 @@ tar -C "$STAGE" -cf "$OUT" .
 log "wrote $OUT ($(du -h "$OUT" | cut -f1))"
 
 # 6) Encrypt at rest.
+chmod 600 "$OUT" 2>/dev/null || true      # plaintext tar, before it ever lands readable
 OUT="$(crypto_encrypt "$OUT")"
+chmod 600 "$OUT" 2>/dev/null || true      # and the encrypted product
 [ "$ENCRYPTION" != "none" ] && log "encrypted -> $(basename "$OUT")"
 
 # 7) Record chain state only AFTER a successful archive.
@@ -163,23 +177,32 @@ echo "$CHAIN_ID $LEVEL" > "$CURRENT_FILE"
 offsite_push "$OUT" || warn "offsite push failed; local copy retained"
 
 # 9) Retention — prune whole chains older than RETENTION_DAYS.
+#
+# Scoped to chains this host produced (fpbx_<HOST>_*). Archives copied in from
+# another host — a migration source, an off-box archival copy — are foreign and
+# are NEVER pruned here; retire those manually. Without the host scope a backup
+# run on one box silently deletes another box's only backup.
 prune_chains() {
 	local days="${RETENTION_DAYS:-0}"; [ "$days" = "0" ] && return 0
-	log "retention: pruning chains with no member newer than ${days}d"
-	# Gather chain ids from archive names.
+	log "retention: pruning ${HOST} chains with no member newer than ${days}d"
+	local foreign
+	foreign="$(find "$BACKUP_DIR" -maxdepth 1 -name 'fpbx_*_L*' \
+		! -name "fpbx_${HOST}_*" -printf '%f\n' 2>/dev/null | wc -l | tr -d ' ')"
+	[ "${foreign:-0}" -gt 0 ] && log "  ${foreign} archive(s) from other hosts — left untouched"
+	# Gather chain ids from THIS host's archive names.
 	local cid
-	for cid in $(ls "$BACKUP_DIR" 2>/dev/null \
-			| sed -n 's/^fpbx_.*_\([0-9TZ]*\)_L[0-9]*_.*/\1/p' | sort -u); do
-		# Newest member of this chain, in minutes old.
+	for cid in $(find "$BACKUP_DIR" -maxdepth 1 -name "fpbx_${HOST}_*_L*" -printf '%f\n' 2>/dev/null \
+			| sed -n "s/^fpbx_${HOST}_\([0-9TZ]*\)_L[0-9]*_.*/\1/p" | sort -u); do
+		# Newest member of this chain.
 		local newest
-		newest="$(find "$BACKUP_DIR" -maxdepth 1 -name "fpbx_*_${cid}_L*" \
+		newest="$(find "$BACKUP_DIR" -maxdepth 1 -name "fpbx_${HOST}_${cid}_L*" \
 			-printf '%T@\n' 2>/dev/null | sort -rn | head -n1)"
 		[ -z "$newest" ] && continue
 		local age_days
 		age_days=$(( ( $(date +%s) - ${newest%.*} ) / 86400 ))
 		if [ "$age_days" -ge "$days" ]; then
 			log "  drop chain $cid (newest ${age_days}d old)"
-			rm -f "$BACKUP_DIR"/fpbx_*_"${cid}"_L*
+			rm -f "$BACKUP_DIR"/fpbx_"${HOST}"_"${cid}"_L*
 			rm -f "$STATE_DIR/$cid.snar"
 		fi
 	done

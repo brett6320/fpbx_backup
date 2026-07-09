@@ -227,6 +227,30 @@ svc() { # svc start|stop|status name
 	systemctl "$1" "$2" 2>/dev/null || warn "systemctl $1 $2 failed"
 }
 
+# fusionpbx_version — detect the FusionPBX release from the web root.
+# Both 4.x and 5.x declare it in core/software/resources/classes/software.php as
+#   public static function version() { return '4.5.22'; }
+# Very old trees instead carry resources/version.php. Echoes "" if undetectable.
+fusionpbx_version() {
+	local web="${INCLUDE_WEBROOT:-/var/www/fusionpbx}" v="" f
+
+	f="$web/core/software/resources/classes/software.php"
+	if [ -f "$f" ]; then
+		v="$(sed -n "/function version()/,/}/{s/.*return[[:space:]]*['\"]\([0-9][0-9.]*\)['\"].*/\1/p;}" \
+			"$f" 2>/dev/null | head -n1)"
+	fi
+
+	if [ -z "$v" ] && [ -f "$web/resources/version.php" ]; then
+		v="$(sed -n "s/.*['\"]\([0-9][0-9.]*\)['\"].*/\1/p" \
+			"$web/resources/version.php" 2>/dev/null | head -n1)"
+	fi
+
+	echo "$v"
+}
+
+# fusionpbx_major VERSION — leading major component ("4.5.22" -> "4"), "" if none.
+fusionpbx_major() { echo "${1%%.*}"; }
+
 # manifest_write DIR — record what/when/versions into the staging dir.
 manifest_write() {
 	local dir="$1"
@@ -239,8 +263,32 @@ manifest_write() {
 		echo "compression=${COMPRESS}"
 		echo "encryption=${ENCRYPTION}"
 		echo "tool_version=1.2.0"
-		echo "fusionpbx_version=$(sed -n 's/.*full[^0-9]*\([0-9.]*\).*/\1/p' \
-			/var/www/fusionpbx/resources/version.php 2>/dev/null | head -n1)"
+		echo "fusionpbx_version=$(fusionpbx_version)"
 		echo "freeswitch_version=$(fs_cli -x 'version' 2>/dev/null | head -n1)"
 	} > "$dir/MANIFEST"
+}
+
+# manifest_get ARCHIVE KEY — echo one MANIFEST value from an archive, or "".
+# Handles age/gpg members (decrypted via a temp copy). --occurrence=1 stops the
+# scan at the first hit so a multi-hundred-MB archive is not read end to end.
+manifest_get() {
+	local f="$1" key="$2" td=""
+	local src
+	src="$f"
+	[ -f "$f" ] || return 0
+	case "$f" in
+		*.age|*.gpg)
+			td="$(mktemp -d "${TMPDIR:-/tmp}/fpbx-mf.XXXXXX")" || return 0
+			cp -a "$f" "$td/" 2>/dev/null || { rm -rf "$td"; return 0; }
+			src="$(crypto_decrypt "$td/$(basename "$f")" 2>/dev/null)" \
+				|| { rm -rf "$td"; return 0; }
+			;;
+	esac
+	# tar exits 2 when the member is absent (archives predating MANIFEST). That
+	# is a normal "unknown", not an error: swallow it rather than lean on
+	# command-substitution suppressing errexit.
+	tar -xOf "$src" --occurrence=1 ./MANIFEST 2>/dev/null \
+		| sed -n "s/^${key}=//p" | head -n1 || true
+	[ -n "$td" ] && rm -rf "$td"
+	return 0
 }
