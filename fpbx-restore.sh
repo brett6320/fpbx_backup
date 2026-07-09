@@ -55,17 +55,23 @@ need tar
 # --list: show chains/levels available locally.
 # ----------------------------------------------------------------------------
 list_chains() {
-	local f b
-	printf '%-22s %-6s %-24s %s\n' CHAIN_ID LEVEL RUN_TS FILE
+	local f b me
+	me="$(hostname -s 2>/dev/null || hostname)"
+	printf '%-22s %-6s %-14s %-24s %s\n' CHAIN_ID LEVEL HOST RUN_TS FILE
 	for f in "$BACKUP_DIR"/fpbx_*_L*; do
 		[ -e "$f" ] || continue
 		b="$(basename "$f")"
-		local cid lvl rts
+		local cid lvl rts hst
 		cid="$(echo "$b" | sed -n 's/^fpbx_.*_\([0-9TZ]*\)_L[0-9]*_.*/\1/p')"
 		lvl="$(echo "$b" | sed -n 's/^fpbx_.*_L\([0-9]*\)_.*/\1/p')"
 		rts="$(echo "$b" | sed -n 's/^fpbx_.*_L[0-9]*_\([0-9TZ]*\)\..*/\1/p')"
-		printf '%-22s %-6s %-24s %s\n' "$cid" "$lvl" "$rts" "$b"
+		hst="$(echo "$b" | sed -n 's/^fpbx_\(.*\)_[0-9TZ]*_L[0-9]*_[0-9TZ]*\..*/\1/p')"
+		# Mark archives that did not originate on this host.
+		[ "$hst" = "$me" ] || hst="$hst *"
+		printf '%-22s %-6s %-14s %-24s %s\n' "$cid" "$lvl" "$hst" "$rts" "$b"
 	done | sort -k1,1 -k2,2n
+	echo
+	echo "* = archive from another host (foreign: never auto-pruned; check version before restoring)"
 }
 if [ "${LIST:-0}" = "1" ]; then list_chains; exit 0; fi
 
@@ -127,13 +133,56 @@ if [ "${VERIFY:-0}" = "1" ]; then
 		else
 			printf '  FAIL L%s inner file archive corrupt/missing\n' "$lvl"; vfail=1; continue
 		fi
-		hasdb=no; ls "$d"/x/db/db_*.pg.dump "$d"/x/db/db_*.sqlite* >/dev/null 2>&1 && hasdb=yes
+		# A member holds EITHER a pg dump OR a sqlite copy, never both. Test the
+		# globs individually: `ls a* b*` exits non-zero when either operand is
+		# missing, which would flag every healthy backup as having no DB.
+		hasdb=no
+		for cand in "$d"/x/db/db_*.pg.dump "$d"/x/db/db_*.sqlite*; do
+			[ -e "$cand" ] && { hasdb=yes; break; }
+		done
 		printf '  OK   L%-2s %-52s files=%-6s db=%s\n' "$lvl" "$b" "$nfiles" "$hasdb"
 		[ "$hasdb" = "yes" ] || { printf '       ^ WARNING: no DB dump in this member\n'; vfail=1; }
 	done
 	echo
 	if [ "$vfail" = "0" ]; then log "verify PASSED for chain $CHAIN (levels 0..$LEVEL)"; exit 0
 	else err "verify FAILED for chain $CHAIN"; exit 1; fi
+fi
+
+# ----------------------------------------------------------------------------
+# Provenance guard — the chain records the host and FusionPBX release it came
+# from. Restoring a 4.x chain's app source (/var/www/fusionpbx, /etc/freeswitch)
+# onto a 5.x host installs PHP 7 code under PHP 8 and fatals. --data-only is the
+# supported cross-major path, so refuse the file portion instead of breaking the
+# box. Chains predating this metadata report "" and only warn.
+# ----------------------------------------------------------------------------
+L0_FILE="$(ls "$BACKUP_DIR"/fpbx_*_"${CHAIN}"_L0_* 2>/dev/null | head -n1 || true)"
+BK_HOST="$(manifest_get "$L0_FILE" host)"
+BK_VER="$(manifest_get "$L0_FILE" fusionpbx_version)"
+CUR_HOST="$(hostname -f 2>/dev/null || hostname)"
+CUR_VER="$(fusionpbx_version)"
+
+log "chain origin: host=${BK_HOST:-unknown} fusionpbx=${BK_VER:-unknown}"
+log "this host   : host=${CUR_HOST} fusionpbx=${CUR_VER:-unknown}"
+
+if [ -n "$BK_HOST" ] && [ "$BK_HOST" != "$CUR_HOST" ]; then
+	warn "this chain was taken on '$BK_HOST', not on '$CUR_HOST'."
+fi
+
+if [ -z "$BK_VER" ]; then
+	warn "chain records no FusionPBX version (archive predates version capture);"
+	warn "confirm the source release before restoring its app source."
+elif [ -n "$CUR_VER" ] && [ "$(fusionpbx_major "$BK_VER")" != "$(fusionpbx_major "$CUR_VER")" ]; then
+	warn "cross-major restore: chain is FusionPBX $BK_VER, this host runs $CUR_VER."
+	if [ "$DO_FILES" = "1" ] && [ "$DATA_ONLY" = "0" ]; then
+		err "Refusing to restore the app source across major versions."
+		err "  FusionPBX $BK_VER expects an older PHP and an older schema; overwriting"
+		err "  /var/www/fusionpbx and /etc/freeswitch on a $CUR_VER host will break it."
+		err "Use the supported cross-version path, which restores DB + voicemail only:"
+		err "    $0 --chain $CHAIN --data-only"
+		err "Override with --force only if you know the app source is compatible."
+		[ "${FORCE:-0}" = "1" ] || die "aborted: cross-major restore without --data-only"
+		warn "--force given; proceeding against advice."
+	fi
 fi
 
 echo

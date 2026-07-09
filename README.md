@@ -127,6 +127,12 @@ age-keygen -o fpbx-age.key           # keep the PRIVATE key OFFLINE
 # public line "age1..." -> AGE_RECIPIENTS in the config
 ```
 
+Archives are always written `0600` inside a `0700` `BACKUP_DIR`, encrypted or
+not — they contain the database, `/etc/letsencrypt`, and the FreeSWITCH TLS
+keys, so no other local account should be able to read them. Encryption protects
+them once they leave the host; file mode protects them while they sit on it.
+With `ENCRYPTION=none` the backup logs a warning to that effect.
+
 Archives are encrypted **to** the public recipient on the host, so the host
 never needs the private key. To restore, supply the private key:
 
@@ -150,8 +156,19 @@ but do not fail the backup — the local copy is retained.
 window. A chain is never partially deleted, so an increment is never orphaned
 from its full.
 
+Pruning is **scoped to the chains this host produced** (`fpbx_<hostname>_*`).
+Archives copied in from another host — a migration source, an off-box archival
+copy — are foreign and are never deleted automatically; retire those yourself.
+`--list` marks foreign archives with `*`.
+
 ## Restore behavior / safety
 
+- **Provenance guard.** Each archive records the host and FusionPBX release it
+  came from. Restore prints both and compares them to the current host. If the
+  chain is from a different **major** version, restoring the app source is
+  refused with a pointer to `--data-only`, because 4.x PHP fatals under PHP 8.
+  Archives written before this metadata existed report `unknown` and only warn.
+  `--force` overrides.
 - Prompts before overwriting (bypass with `--force`).
 - Stops `SERVICES` (freeswitch, nginx, php-fpm) during restore, restarts after.
 - SQLite restore keeps a timestamped `.pre-restore` copy.
