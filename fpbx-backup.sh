@@ -109,12 +109,31 @@ fi
 # 3) tar the file tree with a GNU listed-incremental snapshot.
 #    Paths stored relative to / so restore extracts cleanly to /.
 #    On level 0 the snapshot is created; increments only add changed files.
+#    Piped through the resolved compressor (default zstd) so it works across
+#    tar versions; restore side auto-detects the format.
+compress_resolve
 REL=(); for p in "${SRC[@]}"; do REL+=("${p#/}"); done
-log "archiving file tree (level $LEVEL, ${#SRC[@]} sources)"
-tar --numeric-owner --acls --xattrs \
-	--listed-incremental="$SNAR" \
-	-C / -czf "$STAGE/files.tar.gz" "${REL[@]}" \
-	|| die "file tar failed"
+FILES_ARCHIVE="$STAGE/files.tar${COMPRESS_EXT:+.$COMPRESS_EXT}"
+log "archiving file tree (level $LEVEL, ${#SRC[@]} sources, $COMPRESS)"
+# Disable errexit so a benign tar rc=1 doesn't abort before we inspect it;
+# set/keywords don't clobber PIPESTATUS between the pipeline and the capture.
+set +e
+if [ -n "$COMPRESS_PROG" ]; then
+	tar --numeric-owner --acls --xattrs --listed-incremental="$SNAR" \
+		-C / -cf - "${REL[@]}" | $COMPRESS_PROG > "$FILES_ARCHIVE"
+else
+	tar --numeric-owner --acls --xattrs --listed-incremental="$SNAR" \
+		-C / -cf "$FILES_ARCHIVE" "${REL[@]}"
+fi
+# Snapshot PIPESTATUS in ONE assignment — reading PIPESTATUS[0] into a var is
+# itself a command that resets PIPESTATUS, so grab the whole array at once.
+# tar rc 1 = "some files changed while reading" (normal on a live PBX); rc >=2
+# is a real error. Compressor status (index 1) must be clean.
+pst=("${PIPESTATUS[@]}"); trc=${pst[0]:-0}; crc=${pst[1]:-0}
+set -e
+[ "${trc:-0}" -le 1 ] || die "file tar failed (rc=$trc)"
+[ "${crc:-0}" -eq 0 ] || die "compressor failed (rc=$crc)"
+[ "${trc:-0}" -eq 1 ] && warn "some files changed during archive (level $LEVEL) — normal for live voicemail/recordings"
 
 # 4) Metadata inside the archive (portable / offsite self-describing).
 manifest_write "$STAGE"
