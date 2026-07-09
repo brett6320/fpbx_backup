@@ -34,6 +34,11 @@ db_dump() {
 		log "sqlite backup $DB_PATH -> $(basename "$f")"
 		# .backup is safe against a live/locked DB (online backup API).
 		sqlite3 "$DB_PATH" ".backup '$f'" || die "sqlite backup failed"
+		# Compress the raw .sqlite (pg dumps are already compressed; this isn't).
+		if [ -z "${COMPRESS_PROG+x}" ] && command -v compress_resolve >/dev/null 2>&1; then
+			compress_resolve
+		fi
+		f="$(compress_file "$f")"
 		echo "$f"
 	fi
 }
@@ -73,7 +78,13 @@ db_restore() {
 		log "restoring sqlite -> $DB_PATH"
 		mkdir -p "$(dirname "$DB_PATH")"
 		[ -f "$DB_PATH" ] && cp -a "$DB_PATH" "$DB_PATH.pre-restore.$(date +%s)"
-		cp -a "$dump" "$DB_PATH"
+		# Decompress the dump if it was compressed at backup time.
+		case "$dump" in
+			*.zst) need zstd; zstd -dc "$dump" > "$DB_PATH" ;;
+			*.gz)  need gzip; gzip -dc "$dump" > "$DB_PATH" ;;
+			*.xz)  need xz;   xz   -dc "$dump" > "$DB_PATH" ;;
+			*)     cp -a "$dump" "$DB_PATH" ;;
+		esac
 		# Fix ownership so FreeSWITCH/php can write.
 		chown www-data:www-data "$DB_PATH" 2>/dev/null || true
 	fi

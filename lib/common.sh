@@ -16,6 +16,12 @@
 : "${RETENTION_DAYS:=14}"
 : "${ENCRYPTION:=none}"
 : "${OFFSITE:=none}"
+# Compression for the file tree + SQLite dump (PostgreSQL dumps are already
+# compressed via pg_dump custom format). auto = zstd if available else gzip.
+: "${COMPRESS:=auto}"
+: "${ZSTD_LEVEL:=12}"
+: "${GZIP_LEVEL:=6}"
+: "${XZ_LEVEL:=6}"
 # full | incremental. Incremental captures only files changed since the chain's
 # level-0 full (great for voicemail/recordings that rarely change).
 : "${BACKUP_MODE:=full}"
@@ -177,6 +183,43 @@ _finalize_db() {
 }
 
 # ----------------------------------------------------------------------------
+# Compression
+# ----------------------------------------------------------------------------
+# Resolve COMPRESS -> COMPRESS_PROG (compressor command, may include flags) and
+# COMPRESS_EXT (filename suffix). Used as a pipe so it works across tar versions
+# and old source hosts. Extraction is by GNU tar auto-detect, so the restore
+# side needs no matching config. Falls back gzip->none if a tool is missing.
+compress_resolve() {
+	if [ "$COMPRESS" = "auto" ]; then
+		if command -v zstd >/dev/null 2>&1; then COMPRESS=zstd; else COMPRESS=gzip; fi
+	fi
+	case "$COMPRESS" in
+		zstd) command -v zstd >/dev/null 2>&1 || { warn "zstd missing; using gzip"; COMPRESS=gzip; } ;;
+		xz)   command -v xz   >/dev/null 2>&1 || { warn "xz missing; using gzip";   COMPRESS=gzip; } ;;
+	esac
+	case "$COMPRESS" in
+		zstd) COMPRESS_PROG="zstd -${ZSTD_LEVEL} -T0"; COMPRESS_EXT="zst" ;;
+		gzip) command -v gzip >/dev/null 2>&1 || { warn "gzip missing; storing uncompressed"; COMPRESS=none; }
+		      COMPRESS_PROG="gzip -${GZIP_LEVEL}"; COMPRESS_EXT="gz" ;;
+		xz)   COMPRESS_PROG="xz -${XZ_LEVEL} -T0"; COMPRESS_EXT="xz" ;;
+		none) COMPRESS_PROG=""; COMPRESS_EXT="" ;;
+		*) die "unknown COMPRESS: $COMPRESS" ;;
+	esac
+	[ "$COMPRESS" = "none" ] && { COMPRESS_PROG=""; COMPRESS_EXT=""; }
+	export COMPRESS COMPRESS_PROG COMPRESS_EXT
+	log "compression: ${COMPRESS}${COMPRESS_PROG:+ ($COMPRESS_PROG)}"
+}
+
+# compress_file FILE — compress in place with COMPRESS_PROG, echo new path.
+# No-op (echoes FILE) when compression is disabled.
+compress_file() {
+	local f="$1"
+	[ -z "${COMPRESS_PROG:-}" ] && { echo "$f"; return 0; }
+	$COMPRESS_PROG -c "$f" > "$f.$COMPRESS_EXT" && rm -f "$f" || die "compress failed: $f"
+	echo "$f.$COMPRESS_EXT"
+}
+
+# ----------------------------------------------------------------------------
 # Service control (best-effort; systemd assumed, no-op if absent)
 # ----------------------------------------------------------------------------
 svc() { # svc start|stop|status name
@@ -193,8 +236,9 @@ manifest_write() {
 		echo "db_type=$DB_TYPE"
 		echo "db_name=${DB_NAME:-}"
 		echo "recordings=${BACKUP_RECORDINGS}"
+		echo "compression=${COMPRESS}"
 		echo "encryption=${ENCRYPTION}"
-		echo "tool_version=1.1.0"
+		echo "tool_version=1.2.0"
 		echo "fusionpbx_version=$(sed -n 's/.*full[^0-9]*\([0-9.]*\).*/\1/p' \
 			/var/www/fusionpbx/resources/version.php 2>/dev/null | head -n1)"
 		echo "freeswitch_version=$(fs_cli -x 'version' 2>/dev/null | head -n1)"

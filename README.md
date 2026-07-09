@@ -82,6 +82,15 @@ sudo ./fpbx-restore.sh --chain 20260707T120000Z --target migrate
 Restore flags: `--db-only`, `--files-only`, `--no-services`, `--force`
 (skip prompts), `--config PATH`.
 
+## Compression
+
+On by default. The file tree and the SQLite dump are compressed with **zstd**
+when available (multi-core, best speed/ratio), falling back to gzip
+automatically — controlled by `COMPRESS` (`auto`/`zstd`/`gzip`/`xz`/`none`) and
+the `*_LEVEL` knobs. PostgreSQL dumps are always compressed via pg_dump's custom
+format regardless of this setting. The restore side **auto-detects** the format,
+so `COMPRESS` need not match between the backup and restore hosts.
+
 ## Self-test (preflight)
 
 Run **before** trusting the setup, and it runs automatically before each

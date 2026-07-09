@@ -46,6 +46,15 @@ else
 	no "not GNU tar — incremental backups will NOT work"
 fi
 
+# --- compression ------------------------------------------------------------
+compress_resolve >/dev/null 2>&1 || true
+if [ "${COMPRESS:-none}" = "none" ]; then
+	skip "compression disabled (COMPRESS=none)"
+else
+	have "${COMPRESS_PROG%% *}" && ok "compressor available: $COMPRESS_PROG" \
+		|| no "compressor '$COMPRESS' not installed"
+fi
+
 # --- config + DB ------------------------------------------------------------
 if [ -f "$CONFIG" ]; then
 	ok "config file: $CONFIG"

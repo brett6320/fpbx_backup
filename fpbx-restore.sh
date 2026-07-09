@@ -120,13 +120,14 @@ if [ "${VERIFY:-0}" = "1" ]; then
 			printf '  FAIL L%s outer tar corrupt: %s\n' "$lvl" "$b"; vfail=1; continue
 		fi
 		mkdir -p "$d/x"; tar -C "$d/x" -xf "$src" 2>/dev/null
-		# Inner file tree must be a readable gzip tar.
-		if tar -tzf "$d/x/files.tar.gz" >/dev/null 2>&1; then
-			nfiles="$(tar -tzf "$d/x/files.tar.gz" 2>/dev/null | wc -l | tr -d ' ')"
+		# Inner file tree — any compression (tar auto-detects gz/zst/xz on read).
+		inner="$(ls "$d"/x/files.tar* 2>/dev/null | head -n1)"
+		if [ -n "$inner" ] && tar -tf "$inner" >/dev/null 2>&1; then
+			nfiles="$(tar -tf "$inner" 2>/dev/null | wc -l | tr -d ' ')"
 		else
-			printf '  FAIL L%s inner files.tar.gz corrupt\n' "$lvl"; vfail=1; continue
+			printf '  FAIL L%s inner file archive corrupt/missing\n' "$lvl"; vfail=1; continue
 		fi
-		hasdb=no; ls "$d"/x/db/db_*.pg.dump "$d"/x/db/db_*.sqlite >/dev/null 2>&1 && hasdb=yes
+		hasdb=no; ls "$d"/x/db/db_*.pg.dump "$d"/x/db/db_*.sqlite* >/dev/null 2>&1 && hasdb=yes
 		printf '  OK   L%-2s %-52s files=%-6s db=%s\n' "$lvl" "$b" "$nfiles" "$hasdb"
 		[ "$hasdb" = "yes" ] || { printf '       ^ WARNING: no DB dump in this member\n'; vfail=1; }
 	done
@@ -182,12 +183,14 @@ if [ "$DO_FILES" = "1" ]; then
 	for lvl in $(seq 0 "$LEVEL"); do
 		md="$WORK/L$lvl"; mkdir -p "$md"
 		extract_member "$lvl" "$md"
-		[ -f "$md/x/files.tar.gz" ] || die "level $lvl missing files.tar.gz"
+		inner="$(ls "$md"/x/files.tar* 2>/dev/null | head -n1)"
+		[ -n "$inner" ] || die "level $lvl missing file archive"
 		log "extracting file tree (level $lvl)${DATA_ONLY:+ [data-only]}${TARGET:+ target=$TARGET}"
-		# --incremental restores deletions recorded in the snapshot too.
-		# Trailing members[] restricts extraction to those paths (data-only).
+		# --incremental restores deletions recorded in the snapshot too. tar
+		# auto-detects the compression (gz/zst/xz); trailing members[] limits
+		# extraction to those paths (data-only).
 		tar --incremental --numeric-owner --acls --xattrs \
-			-C / -xzf "$md/x/files.tar.gz" "${MEMBER_FILTER[@]}" \
+			-C / -xf "$inner" "${MEMBER_FILTER[@]}" \
 			|| warn "tar reported errors on level $lvl (check output)"
 	done
 
@@ -216,7 +219,7 @@ fi
 if [ "$DO_DB" = "1" ]; then
 	md="$WORK/L$LEVEL"
 	[ -d "$md/x" ] || { md="$WORK/dbonly"; mkdir -p "$md"; extract_member "$LEVEL" "$md"; }
-	dump="$(ls "$md"/x/db/db_*.pg.dump "$md"/x/db/db_*.sqlite 2>/dev/null | head -n1)"
+	dump="$(ls "$md"/x/db/db_*.pg.dump "$md"/x/db/db_*.sqlite* 2>/dev/null | head -n1)"
 	[ -n "$dump" ] || die "no DB dump inside level $LEVEL archive"
 	globals="$md/x/db/db_globals.sql"
 	log "restoring database from level $LEVEL dump"
